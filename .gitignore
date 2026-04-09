@@ -1,0 +1,4 @@
+.codex
+MedUniEval/data/
+__pycache__/
+*.pyc

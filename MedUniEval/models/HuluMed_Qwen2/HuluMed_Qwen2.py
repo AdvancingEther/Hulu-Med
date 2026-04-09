@@ -3,6 +3,8 @@ from transformers import AutoModelForCausalLM, AutoProcessor
 from PIL import Image
 from tqdm import tqdm
 import os
+from utils.mm_utils import load_npy
+
 def load_images(image_path):
         images = []
         def safe_open(f):
@@ -74,9 +76,18 @@ class HuluMed_Qwen2:
         
         loaded_images = None
 
-        image_paths_or_pil = messages.get("images") or ([messages["image"]] if "image" in messages else [])
-        if image_paths_or_pil:
-            loaded_images = load_images(image_paths_or_pil)
+        npy_path = messages.get("npy_path")
+        if npy_path:
+            loaded_images, _ = load_npy(
+                npy_path,
+                num_slices=messages.get("num_slices"),
+            )
+        else:
+            image_paths_or_pil = messages.get("images") or ([messages["image"]] if "image" in messages else [])
+            if image_paths_or_pil:
+                loaded_images = load_images(image_paths_or_pil)
+
+        if loaded_images:
             if len(loaded_images) > 5:
                 conversation[0]["content"].append({"type": "video", "num_frames": len(loaded_images)})
             elif 0 < len(loaded_images) <= 5:

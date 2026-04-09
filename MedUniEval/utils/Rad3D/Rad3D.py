@@ -1,17 +1,10 @@
-import torch
 import os
 import json
-import gc
 import numpy as np
-from PIL import Image
-from collections import defaultdict
 from tqdm import tqdm
 import re
-from ..utils import save_json, extract, judge_multi_choice, judger, get_compare_messages, judge_open_end_vqa, judge_judgement
 from ..base_dataset import BaseDataset
-from ..question_formats import get_judgement_prompt, get_open_ended_prompt
 from ..eval_3d import evaluate_3drad
-from ..mm_utils import load_images, process_images, load_video, process_video, tokenizer_multimodal_token, get_model_name_from_path, KeywordsStoppingCriteria
 
 
 class Rad3D(BaseDataset):
@@ -22,6 +15,7 @@ class Rad3D(BaseDataset):
         self.samples = []
         self.chunk_idx = int(os.environ.get("chunk_idx", 0))
         self.num_chunks = int(os.environ.get("num_chunks", 1))
+        self.num_slices = int(os.environ.get("RAD3D_NUM_SLICES", 64))
 
     def load_data(self):
         json_path = self.dataset_path
@@ -43,7 +37,8 @@ class Rad3D(BaseDataset):
                 if processed_sample:
                     self.samples.append(processed_sample)
             except Exception as e:
-                print(f"Error processing sample {idx}: {e}")
+                sample_id = sample.get("id", f"sample_{idx}") if isinstance(sample, dict) else f"sample_{idx}"
+                print(f"Error processing sample {sample_id}: {type(e).__name__}: {e}")
                 continue
         
         print(f"Chunk {self.chunk_idx}: Successfully loaded {len(self.samples)} samples")
@@ -52,27 +47,20 @@ class Rad3D(BaseDataset):
     def construct_messages(self, sample):
         try:
             question = sample["conversations"][0]["value"]
-            answer = sample["conversations"][1]["value"]
             question_type = sample.get("Question_Type", "open")
-            main_type = sample.get("type", "Unknown")
-            sub_type = sample.get("sub-type", "Unknown")
         except (KeyError, IndexError) as e:
             print(f"Warning: Invalid sample format. Error: {e}")
             return None
         
-        video_dir = sample["video"][0]
-        
-        if not os.path.isdir(video_dir):
-            print(f"Warning: Video directory not found: {video_dir}")
+        npy_path = sample.get("npy_path")
+
+        if not npy_path:
+            print(f"Warning: npy_path not found in sample: {sample.get('id', 'unknown')}")
+            return None
+        if not os.path.isfile(npy_path):
+            print(f"Warning: npy file not found: {npy_path}")
             return None
 
-        images = []
-        images, timestamps = load_video(video_dir, fps=1, max_frames=1800)
-        
-        if not images:
-            print(f"Warning: No valid images loaded from: {video_dir}")
-            return None
-        
         question_clean = question.replace('<image>\n', '').replace('<video>\n', '').strip()
         
         if question_type.lower() in ['close', 'closed']:
@@ -82,7 +70,8 @@ class Rad3D(BaseDataset):
         
         messages = {
             "prompt": prompt,
-            "images": images
+            "npy_path": npy_path,
+            "num_slices": self.num_slices,
         }
         sample["messages"] = messages
         

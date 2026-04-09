@@ -32,6 +32,8 @@ def main():
                     help='name of eval dataset')
     parser.add_argument('--datasets_path', type=str, default="benchmarks",
                     help='path of eval dataset')
+    parser.add_argument('--dataset_json_path', type=str, default=None,
+                    help='explicit dataset json path for json-backed benchmarks')
     parser.add_argument('--output_path', type=str, default='eval_results/Qwen2-VL-7B-Instruct',
                         help='name of saved json')
     parser.add_argument('--model_name', type=str, default='Qwen2-VL-7B-Instruct',
@@ -52,6 +54,7 @@ def main():
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--top_p', type=float, default=0.001)
     parser.add_argument('--repetition_penalty', type=float, default=1)
+    parser.add_argument('--rad3d_num_slices', type=int, default=64)
 
     parser.add_argument('--test_times', type=int, default=1)
 
@@ -79,6 +82,7 @@ def main():
     os.environ["use_vllm"] = args.use_vllm
 
     os.environ["max_image_num"] = str(args.max_image_num)
+    os.environ["RAD3D_NUM_SLICES"] = str(args.rad3d_num_slices)
 
 
     # vllm and torch setting
@@ -110,7 +114,7 @@ def main():
         set_seed(args.seed)
         print(f'evaluating on {eval_dataset}...')
 
-        eval_dataset_path = os.path.join(args.datasets_path,eval_dataset) if args.datasets_path != "hf" else None
+        eval_dataset_path = args.dataset_json_path if args.dataset_json_path else os.path.join(args.datasets_path, eval_dataset)
         eval_output_path = os.path.join(args.output_path,eval_dataset)
         os.makedirs(eval_output_path, exist_ok=True)
         benchmark = prepare_benchmark(model,eval_dataset,eval_dataset_path,eval_output_path)

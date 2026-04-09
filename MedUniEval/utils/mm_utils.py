@@ -127,6 +127,39 @@ def load_images(image_path):
     return images
 
 
+def load_npy(
+    npy_path: str,
+    num_slices: Optional[int] = None,
+    axis: int = 0,
+):
+    if isinstance(npy_path, list):
+        npy_path = npy_path[0]
+
+    if not os.path.exists(npy_path):
+        raise FileNotFoundError(f"NPY file does not exist: {npy_path}")
+
+    volume = np.load(npy_path, allow_pickle=False)
+    if volume.ndim != 3:
+        raise ValueError(f"Expected a 3D array with shape (S, H, W), got: {volume.shape}")
+
+    if axis != 0:
+        volume = np.moveaxis(volume, axis, 0)
+
+    total_slices = volume.shape[0]
+    if total_slices == 0:
+        return [], []
+
+    if num_slices is None or num_slices <= 0 or total_slices <= num_slices:
+        slice_indices = np.arange(total_slices, dtype=int)
+    else:
+        slice_indices = np.linspace(0, total_slices - 1, num_slices, dtype=int)
+
+    images = [Image.fromarray(volume[idx]).convert("RGB") for idx in slice_indices]
+    timestamps = slice_indices.tolist()
+
+    return images, timestamps
+
+
 def process_pad_image(image, padding_value=(0, 0, 0)):
     image = expand2square(image, padding_value)
 
