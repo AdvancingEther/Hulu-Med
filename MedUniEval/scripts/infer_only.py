@@ -1,10 +1,15 @@
 import json
 import os
 import random
+import sys
 from argparse import ArgumentParser
 
 import numpy as np
 import torch
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from LLMs import init_llm
 
@@ -116,10 +121,19 @@ def main():
     parser.add_argument("--rad3d_num_slices", type=int, default=64)
 
     parser.add_argument("--test_times", type=int, default=1)
+    parser.add_argument("--use_llm_judge", type=str, default="False")
+    parser.add_argument("--judge_gpt_model", type=str, default="None")
+    parser.add_argument("--openai_api_key", type=str, default="None")
 
     args = parser.parse_args()
 
     os.environ["VLLM_USE_V1"] = "0"
+    if args.openai_api_key == "None" and args.use_llm_judge == "True":
+        raise ValueError("If you want to use llm judge, please set the openai api key")
+
+    os.environ["judge_gpt_model"] = args.judge_gpt_model
+    os.environ["use_llm_judge"] = args.use_llm_judge
+    os.environ["openai_api_key"] = args.openai_api_key
     os.environ["REASONING"] = args.reasoning
     os.environ["use_vllm"] = args.use_vllm
     os.environ["max_image_num"] = str(args.max_image_num)

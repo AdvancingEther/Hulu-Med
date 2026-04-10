@@ -276,7 +276,6 @@ async def deal_tasks(tasks, max_concurrent_tasks=500):
 class openai_llm:
     def __init__(self, model=None, **kwargs):
         self.model=kwargs.get("model", "gpt-4.1-2025-04-14")
-        print('using judge model:',self.model)
         self.api_key = os.environ.get("openai_api_key")
         self.base_url = os.environ.get("base_url", "https://api.openai.com/v1")
         if not self.api_key:
@@ -321,4 +320,17 @@ class openai_llm:
         return results
 
 
-judger = openai_llm()
+class _LazyJudger:
+    def __init__(self):
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            self._client = openai_llm()
+        return self._client
+
+    def __getattr__(self, name):
+        return getattr(self._get_client(), name)
+
+
+judger = _LazyJudger()
