@@ -127,7 +127,6 @@ class HuluMed_Qwen2:
             )
 
         outputs = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
-        print(outputs)
         return outputs
     
     def generate_outputs(self, messages_list):
@@ -135,6 +134,5 @@ class HuluMed_Qwen2:
         res = []
         for messages in tqdm(messages_list, desc="Generating Outputs"):
             result = self.generate_output(messages)
-            print(result)
             res.append(result)
         return res
