@@ -25,6 +25,46 @@ THREERAD_TYPE_MAPPING = {
     "Image_Quality": "Image Quality",
 }
 
+THREERAD_TASK_SUBTASKS = {
+    "Task1_Image_Observation": [
+        "Anatomical_observation",
+        "Pathological_observation",
+    ],
+    "Task2_Anomaly_Detection": [
+        "Abnormality_feature",
+        "Abnormality_position",
+        "Abnormality_type",
+        "Diagnosis",
+    ],
+    "Task3_Medical_Computation": [
+        "Diameter",
+        "Size",
+        "Thickness",
+    ],
+    "Task4_Existence_Detection": [
+        "Arterial wall calcification",
+        "Atelectasis",
+        "Bronchiectasis",
+        "Cardiomegaly",
+        "Consolidation",
+        "Coronary artery wall calcification",
+        "Emphysema",
+        "Hiatal hernia",
+        "Interlobular septal thickening",
+        "Lung nodule",
+        "Lung opacity",
+        "Lymphadenopathy",
+        "Medical material",
+        "Mosaic attenuation pattern",
+        "Peribronchial thickening",
+        "Pericardial effusion",
+        "Pleural effusion",
+        "Pulmonary fibrotic sequela",
+    ],
+    "Task5_Static_Temporal_Diagnosis": ["b", "c", "d", "e", "f", "g", "h"],
+    "Task6_Longitudinal_Temporal_Diagnosis": ["b", "c", "d", "e", "f", "g", "h"],
+}
+
 
 _HF_METRIC_CACHE = {}
 
@@ -105,6 +145,7 @@ def _compute_open_metrics_hf(preds, refs):
         predictions=preds,
         references=refs,
         lang="en",
+        model_type="roberta-large",
     )
     bert_f1 = (
         sum(bert_result["f1"]) / len(bert_result["f1"])
@@ -132,6 +173,23 @@ def _format_open_metrics_to_table(open_metrics, has_open_questions=True):
         ["METEOR", fmt_metric("meteor")],
         ["BERTScore F1", fmt_metric("bert_f1")],
     ]
+
+
+def _safe_mean(values):
+    return sum(values) / len(values) if len(values) > 0 else 0.0
+
+
+def _parse_3drad_task_info(pred_item):
+    task_name = pred_item.get("task_name")
+    subtask_name = pred_item.get("subtask_name")
+    if task_name and subtask_name:
+        return str(task_name).strip(), str(subtask_name).strip()
+
+    sample_id = str(pred_item.get("id", "")).strip()
+    parts = sample_id.split("/")
+    if len(parts) < 2:
+        return None, None
+    return parts[0], parts[1]
 
 
 def _evaluate_core_hf(out_samples, desc, category_key, category_name_mapping, calculate_overall=True):
@@ -310,6 +368,222 @@ def _evaluate_core_hf(out_samples, desc, category_key, category_name_mapping, ca
     return "\n".join(results_tables), metrics_result, wrong_answers_by_type
 
 
+def _evaluate_3drad_hf_by_task(out_samples):
+    open_preds_by_task = collections.defaultdict(lambda: collections.defaultdict(list))
+    open_refs_by_task = collections.defaultdict(lambda: collections.defaultdict(list))
+
+    total_open_count_by_task = collections.defaultdict(lambda: collections.defaultdict(int))
+    closed_questions_count_by_task = collections.defaultdict(lambda: collections.defaultdict(int))
+    closed_questions_correct_by_task = collections.defaultdict(lambda: collections.defaultdict(int))
+    wrong_answers_by_task = collections.defaultdict(lambda: collections.defaultdict(list))
+
+    for pred_item in tqdm(out_samples, desc="Evaluating 3D-RAD predictions"):
+        try:
+            gt_value = pred_item["conversations"][1]["value"]
+            question = pred_item["conversations"][0]["value"]
+        except (KeyError, IndexError, TypeError):
+            print(f"Warning: Invalid sample format, skipping sample: {pred_item}")
+            continue
+
+        task_name, subtask_name = _parse_3drad_task_info(pred_item)
+        if task_name is None or subtask_name is None:
+            print(f"Warning: Invalid 3D-RAD id format, skipping sample: {pred_item.get('id')}")
+            continue
+
+        pred_value = pred_item.get("response", "")
+        openclose_type = str(pred_item.get("Question_Type", "OPEN")).upper()
+
+        if openclose_type == "OPEN":
+            total_open_count_by_task[task_name][subtask_name] += 1
+            open_preds_by_task[task_name][subtask_name].append(pred_value)
+            open_refs_by_task[task_name][subtask_name].append(gt_value)
+
+        elif openclose_type in ["CLOSED", "CLOSE"]:
+            closed_questions_count_by_task[task_name][subtask_name] += 1
+
+            answer_letter = extract_choice_letter(gt_value)
+            response_letter = extract_choice_letter(pred_value)
+            is_correct = answer_letter == response_letter
+
+            if is_correct:
+                closed_questions_correct_by_task[task_name][subtask_name] += 1
+            else:
+                wrong_answer_log = {
+                    "question": question,
+                    "correct_answer": gt_value,
+                    "predicted_answer": pred_value,
+                }
+                if "sub-type" in pred_item:
+                    wrong_answer_log["sub_type"] = pred_item.get("sub-type")
+                wrong_answers_by_task[task_name][subtask_name].append(wrong_answer_log)
+
+    results_tables = []
+    metrics_result = {"by_task": {}}
+
+    all_tasks = sorted(
+        list(set(open_preds_by_task.keys()) | set(closed_questions_count_by_task.keys())),
+        key=str,
+    )
+
+    unknown_tasks = [task_name for task_name in all_tasks if task_name not in THREERAD_TASK_SUBTASKS]
+    if unknown_tasks:
+        raise ValueError(
+            "Unexpected 3D-RAD task(s) found in results: "
+            + ", ".join(unknown_tasks)
+        )
+
+    task_macro_open_metrics = {}
+    task_macro_closed_accs = []
+
+    for task_name in all_tasks:
+        actual_subtask_names = sorted(
+            list(
+                set(open_preds_by_task.get(task_name, {}).keys())
+                | set(closed_questions_count_by_task.get(task_name, {}).keys())
+            ),
+            key=str,
+        )
+        expected_subtask_names = THREERAD_TASK_SUBTASKS[task_name]
+
+        missing_subtasks = [name for name in expected_subtask_names if name not in actual_subtask_names]
+        unexpected_subtasks = [name for name in actual_subtask_names if name not in expected_subtask_names]
+        if missing_subtasks or unexpected_subtasks:
+            mismatch_parts = []
+            if missing_subtasks:
+                mismatch_parts.append("missing: " + ", ".join(missing_subtasks))
+            if unexpected_subtasks:
+                mismatch_parts.append("unexpected: " + ", ".join(unexpected_subtasks))
+            raise ValueError(
+                f"3D-RAD task {task_name} subtask mismatch; " + "; ".join(mismatch_parts)
+            )
+
+        metrics_result["by_task"][task_name] = {"subtasks": {}}
+        subtask_open_metrics_dict = {}
+        subtask_closed_accs = []
+
+        for subtask_name in expected_subtask_names:
+            preds = open_preds_by_task.get(task_name, {}).get(subtask_name, [])
+            refs = open_refs_by_task.get(task_name, {}).get(subtask_name, [])
+            open_count = total_open_count_by_task.get(task_name, {}).get(subtask_name, 0)
+
+            open_metrics = _compute_open_metrics_hf(preds, refs)
+            if open_count > 0:
+                subtask_open_metrics_dict[subtask_name] = open_metrics
+
+            closed_count = closed_questions_count_by_task.get(task_name, {}).get(subtask_name, 0)
+            closed_correct = closed_questions_correct_by_task.get(task_name, {}).get(subtask_name, 0)
+            closed_acc = (closed_correct / closed_count) if closed_count > 0 else 0.0
+            if closed_count > 0:
+                subtask_closed_accs.append(closed_acc)
+
+            metrics_result["by_task"][task_name]["subtasks"][subtask_name] = {
+                "open": {
+                    "bleu": open_metrics["bleu"] * 100,
+                    "rouge1": open_metrics["rouge1"] * 100,
+                    "meteor": open_metrics["meteor"] * 100,
+                    "bert_f1": open_metrics["bert_f1"] * 100,
+                },
+                "closed": {
+                    "accuracy": closed_acc * 100,
+                    "total": closed_count,
+                    "correct": closed_correct,
+                },
+                "open_count": open_count,
+                "closed_count": closed_count,
+                "total_samples": open_count + closed_count,
+            }
+
+        task_open_macro = {}
+        for metric_name in ["bleu", "rouge1", "meteor", "bert_f1"]:
+            vals = [subtask_open_metrics_dict[name][metric_name] for name in subtask_open_metrics_dict]
+            task_open_macro[metric_name] = _safe_mean(vals)
+
+        task_closed_macro = _safe_mean(subtask_closed_accs)
+        if len(subtask_closed_accs) > 0:
+            task_macro_closed_accs.append(task_closed_macro)
+        task_macro_open_metrics[task_name] = task_open_macro
+
+        total_open_samples = sum(total_open_count_by_task.get(task_name, {}).values())
+        total_closed_samples = sum(closed_questions_count_by_task.get(task_name, {}).values())
+        total_closed_correct = sum(closed_questions_correct_by_task.get(task_name, {}).values())
+
+        macro_table_data = _format_open_metrics_to_table(
+            task_open_macro,
+            has_open_questions=(len(subtask_open_metrics_dict) > 0),
+        )
+        macro_table_data.extend([
+            [
+                "Closed Question Accuracy (Macro Mean)",
+                f"{task_closed_macro * 100:.4f}" if len(subtask_closed_accs) > 0 else "N/A",
+            ],
+            ["Open Questions", total_open_samples],
+            ["Closed Questions", total_closed_samples],
+            ["Total Samples", total_open_samples + total_closed_samples],
+            ["Open Subtasks", len(subtask_open_metrics_dict)],
+            ["Closed Subtasks", len(subtask_closed_accs)],
+            ["Total Subtasks", len(expected_subtask_names)],
+        ])
+
+        results_tables.extend([
+            f"\n{'=' * 60}",
+            f"Task Macro Mean: {task_name}",
+            "=" * 60,
+            tabulate(macro_table_data, headers=["Metric", "Performance (%)"], tablefmt="grid"),
+        ])
+
+        metrics_result["by_task"][task_name]["macro_mean"] = {
+            "open": {
+                "bleu": task_open_macro["bleu"] * 100,
+                "rouge1": task_open_macro["rouge1"] * 100,
+                "meteor": task_open_macro["meteor"] * 100,
+                "bert_f1": task_open_macro["bert_f1"] * 100,
+            },
+            "closed": {
+                "accuracy_macro_mean": task_closed_macro * 100,
+                "total": total_closed_samples,
+                "correct": total_closed_correct,
+            },
+            "open_subtasks": len(subtask_open_metrics_dict),
+            "closed_subtasks": len(subtask_closed_accs),
+            "total_subtasks": len(expected_subtask_names),
+            "total_samples": total_open_samples + total_closed_samples,
+        }
+
+    if len(all_tasks) > 0:
+        overall_open_macro = {}
+        for metric_name in ["bleu", "rouge1", "meteor", "bert_f1"]:
+            vals = [task_macro_open_metrics[task_name][metric_name] for task_name in task_macro_open_metrics]
+            overall_open_macro[metric_name] = _safe_mean(vals)
+
+        overall_closed_macro = _safe_mean(task_macro_closed_accs)
+        total_samples = 0
+        for task_name in all_tasks:
+            total_samples += metrics_result["by_task"][task_name]["macro_mean"]["total_samples"]
+
+        metrics_result["overall"] = {
+            "macro_mean": {
+                "open": {
+                    "bleu": overall_open_macro["bleu"] * 100,
+                    "rouge1": overall_open_macro["rouge1"] * 100,
+                    "meteor": overall_open_macro["meteor"] * 100,
+                    "bert_f1": overall_open_macro["bert_f1"] * 100,
+                },
+                "closed": {
+                    "accuracy_task_macro_mean": overall_closed_macro * 100,
+                },
+                "total_tasks": len(all_tasks),
+                "total_samples": total_samples,
+            }
+        }
+
+    wrong_answers_result = {
+        task_name: dict(subtask_payload)
+        for task_name, subtask_payload in wrong_answers_by_task.items()
+    }
+
+    return "\n".join(results_tables), metrics_result, wrong_answers_result
+
+
 def evaluate_m3d(out_samples):
     return _evaluate_core_hf(
         out_samples=out_samples,
@@ -321,10 +595,4 @@ def evaluate_m3d(out_samples):
 
 
 def evaluate_3drad(out_samples):
-    return _evaluate_core_hf(
-        out_samples=out_samples,
-        desc="Evaluating 3D-RAD predictions",
-        category_key="type",
-        category_name_mapping=THREERAD_TYPE_MAPPING,
-        calculate_overall=False,
-    )
+    return _evaluate_3drad_hf_by_task(out_samples)

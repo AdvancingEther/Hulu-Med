@@ -1,9 +1,9 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
 from PIL import Image
 from tqdm import tqdm
 import os
 from utils.mm_utils import load_npy
+from .hulumed_src import HulumedProcessor, HulumedQwen2Config, HulumedQwen2ForCausalLM
 
 def load_images(image_path):
         images = []
@@ -48,18 +48,24 @@ class HuluMed_Qwen2:
     def __init__(self, model_path, args):
 
         super().__init__()
-        
-        self.model = AutoModelForCausalLM.from_pretrained(
+
+        config = HulumedQwen2Config.from_pretrained(
             model_path,
-            trust_remote_code=True,
+            local_files_only=True,
+        )
+
+        self.model = HulumedQwen2ForCausalLM.from_pretrained(
+            model_path,
+            config=config,
+            local_files_only=True,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             attn_implementation="flash_attention_2",
         )
         
-        self.processor = AutoProcessor.from_pretrained(
+        self.processor = HulumedProcessor.from_pretrained(
             model_path,
-            trust_remote_code=True
+            local_files_only=True,
         )
         self.tokenizer = self.processor.tokenizer
         self.model.eval()

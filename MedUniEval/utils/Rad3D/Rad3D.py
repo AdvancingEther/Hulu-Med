@@ -4,7 +4,7 @@ import numpy as np
 from tqdm import tqdm
 import re
 from ..base_dataset import BaseDataset
-from ..eval_3d import evaluate_3drad
+from ..eval_3d_hf import evaluate_3drad
 
 
 class Rad3D(BaseDataset):
