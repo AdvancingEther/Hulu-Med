@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export CUDA_VISIBLE_DEVICES="6"
+export CUDA_VISIBLE_DEVICES="4"
 
-DATASET_JSON_PATH="./data/3drad/3drad_test.json"
+DATASET_JSON_PATH="./data/3drad/3drad_task1.json"
 OUTPUT_PATH="./output/3drad"
 
 EVAL_DATASETS="3DRad"

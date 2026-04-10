@@ -7,23 +7,23 @@ from collections import Counter
 
 TASK_TYPE_MAPPING = {
     "Task1_Image_Observation": ("Organ_Identification", "Observation"),
-    "Task2_Anomaly_Detection": ("Abnormality_Detection", "Observation"),
-    "Task3_Medical_Computation": ("Medical_Computation", "Measurement"),
-    "Task4_Existence_Detection": ("Abnormality_Detection", "Presence"),
-    "Task5_Static_Temporal_Diagnosis": ("Abnormality_Detection", "Static_Temporal_Status"),
-    "Task6_Longitudinal_Temporal_Diagnosis": ("Abnormality_Detection", "Longitudinal_Temporal_Status"),
+    # "Task2_Anomaly_Detection": ("Abnormality_Detection", "Observation"),
+    # "Task3_Medical_Computation": ("Medical_Computation", "Measurement"),
+    # "Task4_Existence_Detection": ("Abnormality_Detection", "Presence"),
+    # "Task5_Static_Temporal_Diagnosis": ("Abnormality_Detection", "Static_Temporal_Status"),
+    # "Task6_Longitudinal_Temporal_Diagnosis": ("Abnormality_Detection", "Longitudinal_Temporal_Status"),
 }
 
 SUBTASK_MAPPING = {
     ("Task1_Image_Observation", "Anatomical_observation"): ("Organ_Identification", "Organ_Name"),
     ("Task1_Image_Observation", "Pathological_observation"): ("Abnormality_Detection", "Presence"),
-    ("Task2_Anomaly_Detection", "Abnormality_feature"): ("Abnormality_Detection", "Severity"),
-    ("Task2_Anomaly_Detection", "Abnormality_position"): ("Spatial_Relationship", "Location"),
-    ("Task2_Anomaly_Detection", "Abnormality_type"): ("Abnormality_Detection", "Presence"),
-    ("Task2_Anomaly_Detection", "Diagnosis"): ("Abnormality_Detection", "Presence"),
-    ("Task3_Medical_Computation", "Diameter"): ("Medical_Computation", "Distance"),
-    ("Task3_Medical_Computation", "Size"): ("Medical_Computation", "Distance"),
-    ("Task3_Medical_Computation", "Thickness"): ("Medical_Computation", "Thickness"),
+    # ("Task2_Anomaly_Detection", "Abnormality_feature"): ("Abnormality_Detection", "Severity"),
+    # ("Task2_Anomaly_Detection", "Abnormality_position"): ("Spatial_Relationship", "Location"),
+    # ("Task2_Anomaly_Detection", "Abnormality_type"): ("Abnormality_Detection", "Presence"),
+    # ("Task2_Anomaly_Detection", "Diagnosis"): ("Abnormality_Detection", "Presence"),
+    # ("Task3_Medical_Computation", "Diameter"): ("Medical_Computation", "Distance"),
+    # ("Task3_Medical_Computation", "Size"): ("Medical_Computation", "Distance"),
+    # ("Task3_Medical_Computation", "Thickness"): ("Medical_Computation", "Thickness"),
 }
 
 
@@ -52,19 +52,19 @@ def parse_args():
     parser.add_argument(
         "--output_json",
         type=str,
-        default="/home/deeplearning/data/data2/wzc/VolInterp/methods/prune-proj/MedUniEval/data/3drad/3drad_test.json",
+        default="/home/deeplearning/data/data2/wzc/VolInterp/methods/prune-proj/MedUniEval/data/3drad/3drad_task1.json",
         help="Output dataset json path.",
     )
     parser.add_argument(
         "--task_names",
         type=str,
-        default="",
+        default="Task1_Image_Observation",
         help="Optional comma-separated task folder names to keep.",
     )
     parser.add_argument(
         "--nii_axis",
         type=int,
-        default=2,
+        default=0,
         help="Metadata field kept for compatibility.",
     )
     parser.add_argument(
