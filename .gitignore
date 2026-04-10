@@ -2,3 +2,4 @@
 MedUniEval/data/
 __pycache__/
 *.pyc
+MedUniEval/output/

@@ -24,6 +24,7 @@ import importlib.util
 import os.path as osp
 import math
 import warnings
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -238,7 +239,8 @@ class VisionAttention(nn.Module):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
         rotary_pos_emb: torch.Tensor = None,
-    ) -> torch.Tensor:
+        return_attn: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Input shape: Time x Channel"""
 
         q_len, _ = hidden_states.size()
@@ -266,15 +268,20 @@ class VisionAttention(nn.Module):
         attn_weights = attn_weights + attention_mask
 
         # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_weights = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
-        attn_output = torch.matmul(attn_weights, value_states)
+        attn_probs = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        attn_output = torch.matmul(
+            nn.functional.dropout(attn_probs, p=self.dropout, training=self.training),
+            value_states,
+        )
 
         attn_output = attn_output.transpose(0, 1)
         attn_output = attn_output.reshape(q_len, -1)
         attn_output = self.out_proj(attn_output)
 
-        return attn_output
+        if not return_attn:
+            return attn_output, None, None
+
+        return attn_output, query_states.transpose(0, 1), key_states.transpose(0, 1)
 
 
 class VisionFlashAttention2(VisionAttention):
@@ -288,7 +295,8 @@ class VisionFlashAttention2(VisionAttention):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
         rotary_pos_emb: torch.Tensor = None,
-    ) -> torch.Tensor:
+        return_attn: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
@@ -310,7 +318,10 @@ class VisionFlashAttention2(VisionAttention):
         )
         attn_output = self.out_proj(attn_output)
         
-        return attn_output
+        if not return_attn:
+            return attn_output, None, None
+
+        return attn_output, query_states, key_states
 
 
 class VisionSdpaAttention(VisionAttention):
@@ -320,7 +331,8 @@ class VisionSdpaAttention(VisionAttention):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
         rotary_pos_emb: torch.Tensor = None,
-    ) -> torch.Tensor:
+        return_attn: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         seq_length = hidden_states.shape[0]
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
@@ -344,7 +356,10 @@ class VisionSdpaAttention(VisionAttention):
         attn_output = attn_output.transpose(0, 1)
         attn_output = attn_output.reshape(seq_length, -1)
         attn_output = self.out_proj(attn_output)
-        return attn_output
+        if not return_attn:
+            return attn_output, None, None
+
+        return attn_output, query_states.transpose(0, 1), key_states.transpose(0, 1)
 
 
 VISION_ATTENTION_CLASSES = {
@@ -382,12 +397,22 @@ class HulumedVisionEncoderLayer(nn.Module):
         self.layer_norm2 = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
 
     # Ignore copy
-    def forward(self, hidden_states, cu_seqlens, rotary_pos_emb) -> torch.Tensor:
-        hidden_states = hidden_states + self.self_attn(
-            self.layer_norm1(hidden_states), cu_seqlens=cu_seqlens, rotary_pos_emb=rotary_pos_emb
+    def forward(
+        self,
+        hidden_states,
+        cu_seqlens,
+        rotary_pos_emb,
+        return_attn: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        attn_output, attn_query, attn_key = self.self_attn(
+            self.layer_norm1(hidden_states),
+            cu_seqlens=cu_seqlens,
+            rotary_pos_emb=rotary_pos_emb,
+            return_attn=return_attn,
         )
+        hidden_states = hidden_states + attn_output
         hidden_states = hidden_states + self.mlp(self.layer_norm2(hidden_states))
-        return hidden_states
+        return hidden_states, attn_query, attn_key
 
 
 class HulumedVisionTransformerEncoder(nn.Module):
@@ -399,6 +424,55 @@ class HulumedVisionTransformerEncoder(nn.Module):
         self.rotary_pos_emb = VisionRotaryEmbedding(head_dim // 2)
         self.layers = nn.ModuleList([HulumedVisionEncoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
+
+    def _aggregate_attention_outputs(
+        self,
+        attn_queries: torch.Tensor,
+        attn_keys: torch.Tensor,
+        grid_sizes: torch.Tensor,
+        merge_sizes: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        split_sizes = grid_sizes.prod(dim=1).tolist()
+        attn_query_chunks = attn_queries.split(split_sizes, dim=0)
+        attn_keys_chunks = attn_keys.split(split_sizes, dim=0)
+
+        score_outputs = []
+        key_outputs = []
+        for query_chunk, key_chunk, grid_size, merge_size in zip(
+            attn_query_chunks,
+            attn_keys_chunks,
+            grid_sizes,
+            merge_sizes,
+        ):
+            t, h, w = (int(x) for x in grid_size.tolist())
+            merge_size = int(merge_size.item() if isinstance(merge_size, torch.Tensor) else merge_size)
+            num_heads = query_chunk.shape[1]
+            key_dim = key_chunk.shape[-1]
+            pooled_h = h // merge_size
+            pooled_w = w // merge_size
+
+            query_chunk = query_chunk.view(t, h, w, num_heads, key_dim)
+            frame_queries = query_chunk.mean(dim=(1, 2))
+
+            key_chunk = key_chunk.view(
+                t,
+                pooled_h,
+                merge_size,
+                pooled_w,
+                merge_size,
+                num_heads,
+                key_dim,
+            ).permute(0, 1, 3, 2, 4, 5, 6)
+            key_chunk = key_chunk.mean(dim=(3, 4))
+            score_chunk = (key_chunk * frame_queries[:, None, None, :, :]).sum(dim=-1) / math.sqrt(key_dim)
+            score_chunk = score_chunk.reshape(t, pooled_h * pooled_w, num_heads)
+            score_chunk = F.softmax(score_chunk.permute(0, 2, 1), dim=-1).mean(dim=1)
+
+            key_chunk = key_chunk.mean(dim=3)
+            score_outputs.append(score_chunk.reshape(-1))
+            key_outputs.append(key_chunk.reshape(-1, key_dim))
+
+        return torch.cat(score_outputs, dim=0), torch.cat(key_outputs, dim=0)
 
     def rot_pos_emb(self, grid_sizes, merge_sizes):
         pos_ids = []
@@ -431,24 +505,49 @@ class HulumedVisionTransformerEncoder(nn.Module):
 
         return rotary_pos_emb
 
-    def forward(self, hidden_states, grid_sizes, merge_sizes) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states,
+        grid_sizes,
+        merge_sizes,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         rotary_pos_emb = self.rot_pos_emb(grid_sizes, merge_sizes)
 
         cu_seqlens = torch.repeat_interleave(grid_sizes[:, 1] * grid_sizes[:, 2], grid_sizes[:, 0]).cumsum(dim=0, dtype=torch.int32)
         cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
 
-        for blk in self.layers:
+        want_attn = bool(getattr(self.config, "vision_zip_config", {}).get("enable", False))
+        attn_scores = None
+        attn_keys = None
+
+        for layer_idx, blk in enumerate(self.layers):
+            return_attn = want_attn and layer_idx == len(self.layers) - 1
             if self.gradient_checkpointing and self.training:
-                hidden_states = self._gradient_checkpointing_func(
+                hidden_states, attn_scores, attn_keys = self._gradient_checkpointing_func(
                     blk.__call__,
                     hidden_states,
                     cu_seqlens,
-                    rotary_pos_emb
+                    rotary_pos_emb,
+                    return_attn,
                 )
             else:
-                hidden_states = blk(hidden_states, cu_seqlens=cu_seqlens, rotary_pos_emb=rotary_pos_emb)
+                hidden_states, attn_scores, attn_keys = blk(
+                    hidden_states,
+                    cu_seqlens=cu_seqlens,
+                    rotary_pos_emb=rotary_pos_emb,
+                    return_attn=return_attn,
+                )
 
-        return hidden_states
+        if not want_attn or attn_scores is None or attn_keys is None:
+            return hidden_states, None, None
+
+        attn_scores, attn_keys = self._aggregate_attention_outputs(
+            attn_scores,
+            attn_keys,
+            grid_sizes,
+            merge_sizes,
+        )
+        return hidden_states, attn_scores, attn_keys
 
 
 class HulumedVisionEncoderModel(PreTrainedModel):
@@ -474,15 +573,23 @@ class HulumedVisionEncoderModel(PreTrainedModel):
 
         self.post_init()
 
-    def forward(self, pixel_values, grid_sizes, merge_sizes=None) -> torch.Tensor:
+    def forward(self, pixel_values, grid_sizes, merge_sizes=None):
         hidden_states = self.embeddings(pixel_values)
-        hidden_states = self.encoder(hidden_states, grid_sizes, merge_sizes)
+        hidden_states, attn_scores, attn_keys = self.encoder(hidden_states, grid_sizes, merge_sizes)
         hidden_states = self.post_layernorm(hidden_states)
 
         hidden_states_chunks = hidden_states.split(grid_sizes.prod(dim=1).tolist(), dim=0)
+        score_chunks = None
+        key_chunks = None
+        if attn_scores is not None and attn_keys is not None:
+            downsampled_sizes = grid_sizes.prod(dim=1).div(merge_sizes ** 2).long().tolist()
+            score_chunks = attn_scores.split(downsampled_sizes, dim=0)
+            key_chunks = attn_keys.split(downsampled_sizes, dim=0)
         outputs = []
+        score_outputs = []
+        key_outputs = []
 
-        for hidden_states, grid_size, merge_size in zip(hidden_states_chunks, grid_sizes, merge_sizes):
+        for idx, (hidden_states, grid_size, merge_size) in enumerate(zip(hidden_states_chunks, grid_sizes, merge_sizes)):
             # NOTE: previous implementation, which supports downsampling with any factor
             c = hidden_states.shape[-1]
             hidden_states = hidden_states.view(
@@ -504,8 +611,14 @@ class HulumedVisionEncoderModel(PreTrainedModel):
             # hidden_states = hidden_states.mean(dim=1)
 
             outputs.append(hidden_states)
+            if score_chunks is not None and key_chunks is not None:
+                score_outputs.append(score_chunks[idx])
+                key_outputs.append(key_chunks[idx])
 
-        return torch.cat(outputs, dim=0)
+        hidden_states = torch.cat(outputs, dim=0)
+        if score_outputs and key_outputs:
+            return hidden_states, torch.cat(score_outputs, dim=0), torch.cat(key_outputs, dim=0)
+        return hidden_states
 
     def _init_weights(self, module):
         """Initialize the weights"""

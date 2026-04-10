@@ -30,6 +30,11 @@ class Hulumed_qwen2:
     def __new__(cls, model_path: str, args: Any) -> Any:
         from models.HuluMed_Qwen2.HuluMed_Qwen2 import HuluMed_Qwen2
         return HuluMed_Qwen2(model_path, args)
+@LLMRegistry.register("Hulumed_qwen2_visionzip")
+class Hulumed_qwen2_visionzip:
+    def __new__(cls, model_path: str, args: Any) -> Any:
+        from models.HuluMed_Qwen2.HuluMed_Qwen2_VisionZip import HuluMed_Qwen2_VisionZip
+        return HuluMed_Qwen2_VisionZip(model_path, args)
 @LLMRegistry.register("Hulumed_qwen3")
 class Hulumed_qwen3:
     def __new__(cls, model_path: str, args: Any) -> Any:
@@ -159,4 +164,3 @@ def init_llm(args):
         return model_class(args.model_path, args)
     except ValueError as e:
         raise ValueError(f"{args.model_name} not supported") from e
-

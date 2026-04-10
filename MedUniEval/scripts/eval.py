@@ -32,6 +32,17 @@ def set_seed(seed_value):
 def parse_eval_datasets(datasets_str):
     return datasets_str.split(',')
 
+
+def parse_optional_bool(value):
+    if value is None:
+        return None
+    value = value.strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean value: {value}")
+
 def main():
     parser = ArgumentParser()
     parser.add_argument('--eval_datasets', type=parse_eval_datasets, default=['MMMU'],
@@ -61,6 +72,9 @@ def main():
     parser.add_argument('--top_p', type=float, default=0.001)
     parser.add_argument('--repetition_penalty', type=float, default=1)
     parser.add_argument('--rad3d_num_slices', type=int, default=64)
+    parser.add_argument('--vision_zip_enable', type=parse_optional_bool, default=None)
+    parser.add_argument('--vision_zip_domain_kept_ratio', type=float, default=None)
+    parser.add_argument('--vision_zip_contextual_kept_ratio', type=float, default=None)
 
     parser.add_argument('--test_times', type=int, default=1)
 
@@ -89,6 +103,12 @@ def main():
 
     os.environ["max_image_num"] = str(args.max_image_num)
     os.environ["RAD3D_NUM_SLICES"] = str(args.rad3d_num_slices)
+    if args.vision_zip_enable is not None:
+        os.environ["VISION_ZIP_ENABLE"] = str(args.vision_zip_enable)
+    if args.vision_zip_domain_kept_ratio is not None:
+        os.environ["VISION_ZIP_DOMAIN_KEPT_RATIO"] = str(args.vision_zip_domain_kept_ratio)
+    if args.vision_zip_contextual_kept_ratio is not None:
+        os.environ["VISION_ZIP_CONTEXTUAL_KEPT_RATIO"] = str(args.vision_zip_contextual_kept_ratio)
 
 
     # vllm and torch setting

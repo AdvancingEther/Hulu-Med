@@ -16,7 +16,26 @@
 # limitations under the License.
 """HuluMed vision encoder model configuration."""
 
+from typing import Any, Dict, Optional
+
 from transformers import PretrainedConfig
+
+
+def normalize_vision_zip_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    default_config = {
+        "enable": False,
+        "domain_kept_ratio": 0.65,
+        "contextual_kept_ratio": 0.05,
+    }
+    if config is None:
+        return dict(default_config)
+
+    merged = dict(default_config)
+    merged.update(config)
+    merged["enable"] = bool(merged["enable"])
+    merged["domain_kept_ratio"] = float(merged["domain_kept_ratio"])
+    merged["contextual_kept_ratio"] = float(merged["contextual_kept_ratio"])
+    return merged
 
 
 class HulumedVisionEncoderConfig(PretrainedConfig):
@@ -34,6 +53,7 @@ class HulumedVisionEncoderConfig(PretrainedConfig):
         hidden_act="gelu_pytorch_tanh",
         layer_norm_eps=1e-6,
         attention_dropout=0.0,
+        vision_zip_config: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -47,3 +67,4 @@ class HulumedVisionEncoderConfig(PretrainedConfig):
         self.attention_dropout = attention_dropout
         self.layer_norm_eps = layer_norm_eps
         self.hidden_act = hidden_act
+        self.vision_zip_config = normalize_vision_zip_config(vision_zip_config)
