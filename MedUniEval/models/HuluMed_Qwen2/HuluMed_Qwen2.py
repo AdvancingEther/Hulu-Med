@@ -53,6 +53,9 @@ class HuluMed_Qwen2:
             model_path,
             local_files_only=True,
         )
+        use_token_compression = getattr(args, "use_token_compression", None)
+        if use_token_compression is not None:
+            config.use_token_compression = use_token_compression
 
         self.model = HulumedQwen2ForCausalLM.from_pretrained(
             model_path,
@@ -62,6 +65,8 @@ class HuluMed_Qwen2:
             device_map="auto",
             attn_implementation="flash_attention_2",
         )
+        if use_token_compression is not None:
+            self.model.config.use_token_compression = use_token_compression
         
         self.processor = HulumedProcessor.from_pretrained(
             model_path,
