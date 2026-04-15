@@ -27,6 +27,7 @@ MAX_IMAGE_NUM="600"
 TEMPERATURE="0"
 TOP_P="0.95"
 REPETITION_PENALTY="1.0"
+FIXED_RESOLUTION="${FIXED_RESOLUTION:-336}"
 
 if [ ! -f "$DATASET_JSON_PATH" ]; then
     echo "3D-RAD dataset json not found: $DATASET_JSON_PATH" >&2
@@ -49,8 +50,15 @@ run_experiment() {
     local vzip_tag="$2"
     local vision_zip_domain_kept_ratio="$3"
     local vision_zip_contextual_kept_ratio="$4"
+    local -a fixed_resolution_args=()
 
-    local output_path="$SCRIPT_DIR/output/3drad_hf_metrics_slice_${rad3d_num_slices}_vzip_${vzip_tag}"
+    local output_tag="vzip_${vzip_tag}"
+    if [ -n "$FIXED_RESOLUTION" ]; then
+        output_tag="${output_tag}_fixres${FIXED_RESOLUTION}"
+        fixed_resolution_args=(--fixed_resolution "$FIXED_RESOLUTION")
+    fi
+
+    local output_path="$SCRIPT_DIR/output/3drad_hf_metrics_slice_${rad3d_num_slices}_${output_tag}"
     local results_dir="$output_path/$EVAL_DATASETS"
     local results_path="$results_dir/results.json"
 
@@ -75,6 +83,7 @@ run_experiment() {
                 --max_new_tokens "$MAX_NEW_TOKENS" \
                 --max_image_num "$MAX_IMAGE_NUM" \
                 --rad3d_num_slices "$rad3d_num_slices" \
+                "${fixed_resolution_args[@]}" \
                 --vision_zip_enable "$VISION_ZIP_ENABLE" \
                 --vision_zip_domain_kept_ratio "$vision_zip_domain_kept_ratio" \
                 --vision_zip_contextual_kept_ratio "$vision_zip_contextual_kept_ratio" \
@@ -102,6 +111,7 @@ run_experiment() {
                     --max_new_tokens "$MAX_NEW_TOKENS" \
                     --max_image_num "$MAX_IMAGE_NUM" \
                     --rad3d_num_slices "$rad3d_num_slices" \
+                    "${fixed_resolution_args[@]}" \
                     --vision_zip_enable "$VISION_ZIP_ENABLE" \
                     --vision_zip_domain_kept_ratio "$vision_zip_domain_kept_ratio" \
                     --vision_zip_contextual_kept_ratio "$vision_zip_contextual_kept_ratio" \

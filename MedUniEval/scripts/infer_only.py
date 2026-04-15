@@ -130,6 +130,7 @@ def main():
     parser.add_argument("--top_p", type=float, default=0.001)
     parser.add_argument("--repetition_penalty", type=float, default=1.0)
     parser.add_argument("--rad3d_num_slices", type=int, default=64)
+    parser.add_argument("--fixed_resolution", type=int, default=None)
     parser.add_argument("--use_token_compression", type=parse_optional_bool, default=None)
     parser.add_argument("--vision_zip_enable", type=parse_optional_bool, default=None)
     parser.add_argument("--vision_zip_domain_kept_ratio", type=float, default=None)

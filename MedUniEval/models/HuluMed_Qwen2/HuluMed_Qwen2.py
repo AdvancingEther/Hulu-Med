@@ -72,6 +72,9 @@ class HuluMed_Qwen2:
             model_path,
             local_files_only=True,
         )
+        fixed_resolution = getattr(args, "fixed_resolution", None)
+        if fixed_resolution is not None:
+            self.processor.image_processor.fixed_resolution = fixed_resolution
         self.tokenizer = self.processor.tokenizer
         self.model.eval()
 

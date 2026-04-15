@@ -61,6 +61,21 @@ if is_vision_available():
     from PIL import Image
 
 
+def _normalize_fixed_resolution(fixed_resolution):
+    if fixed_resolution is None:
+        return None
+    if isinstance(fixed_resolution, int):
+        if fixed_resolution <= 0:
+            raise ValueError("fixed_resolution must be a positive integer.")
+        return (fixed_resolution, fixed_resolution)
+    if isinstance(fixed_resolution, (list, tuple)) and len(fixed_resolution) == 2:
+        height, width = fixed_resolution
+        if not isinstance(height, int) or not isinstance(width, int) or height <= 0 or width <= 0:
+            raise ValueError("fixed_resolution must contain two positive integers.")
+        return (height, width)
+    raise ValueError("fixed_resolution must be an int or a pair of ints.")
+
+
 def is_valid_video(video) -> bool:
     if isinstance(video, (list, tuple)):
         return all(is_valid_image(frame) for frame in video)
@@ -224,6 +239,7 @@ class HulumedImageProcessor(BaseImageProcessor):
         max_tokens: int = 16384,
         patch_size: int = 14,
         merge_size: Optional[int] = None,
+        fixed_resolution: Optional[Union[int, List[int]]] = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -238,7 +254,8 @@ class HulumedImageProcessor(BaseImageProcessor):
         self.max_tokens = max_tokens
         self.patch_size = patch_size
         self.do_convert_rgb = do_convert_rgb
-        self.merge_size = merge_size  
+        self.merge_size = merge_size
+        self.fixed_resolution = _normalize_fixed_resolution(fixed_resolution)
 
     def _preprocess(
         self,
@@ -423,6 +440,7 @@ class HulumedImageProcessor(BaseImageProcessor):
         image_mean = image_mean if image_mean is not None else self.image_mean
         image_std = image_std if image_std is not None else self.image_std
         do_convert_rgb = do_convert_rgb if do_convert_rgb is not None else self.do_convert_rgb
+        fixed_resolution = _normalize_fixed_resolution(self.fixed_resolution)
         
         # Handle merge_size: use provided value, or fall back to instance default, or use 1
         if merge_size is None:
@@ -435,7 +453,16 @@ class HulumedImageProcessor(BaseImageProcessor):
             merge_sizes = merge_size
         else:
             merge_sizes = [merge_size for _ in images]
-        if all(merge_size == merge_sizes[0] for merge_size in merge_sizes):
+        if fixed_resolution is not None:
+            target_sizes = []
+            for current_merge_size in merge_sizes:
+                factor = self.patch_size * current_merge_size
+                if fixed_resolution[0] % factor != 0 or fixed_resolution[1] % factor != 0:
+                    raise ValueError(
+                        f"fixed_resolution {fixed_resolution} must be divisible by patch_size * merge_size = {factor}."
+                    )
+                target_sizes.append(fixed_resolution)
+        elif all(merge_size == merge_sizes[0] for merge_size in merge_sizes):
             target_sizes = simple_batched_resize(
                 images,
                 factor=self.patch_size * merge_sizes[0],

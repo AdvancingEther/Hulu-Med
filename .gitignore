@@ -3,3 +3,5 @@ MedUniEval/data/
 __pycache__/
 *.pyc
 MedUniEval/output/
+.vscode/
+CDPruner/

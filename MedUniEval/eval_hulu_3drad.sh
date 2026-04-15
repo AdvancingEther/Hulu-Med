@@ -27,6 +27,7 @@ MAX_IMAGE_NUM="600"
 TEMPERATURE="0"
 TOP_P="0.95"
 REPETITION_PENALTY="1.0"
+FIXED_RESOLUTION="336"
 
 if [ ! -f "$DATASET_JSON_PATH" ]; then
     echo "3D-RAD dataset json not found: $DATASET_JSON_PATH" >&2
@@ -46,11 +47,17 @@ run_experiment() {
     local rad3d_num_slices="$1"
     local use_token_compression="$2"
     local output_tag
+    local -a fixed_resolution_args=()
 
     if [ "$use_token_compression" = "true" ]; then
         output_tag="compressl1"
     else
         output_tag="ori"
+    fi
+
+    if [ -n "$FIXED_RESOLUTION" ]; then
+        output_tag="${output_tag}_fixres${FIXED_RESOLUTION}"
+        fixed_resolution_args=(--fixed_resolution "$FIXED_RESOLUTION")
     fi
 
     local output_path="$SCRIPT_DIR/output/3drad_hf_metrics_slice_${rad3d_num_slices}_${output_tag}"
@@ -79,6 +86,7 @@ run_experiment() {
                 --max_image_num "$MAX_IMAGE_NUM" \
                 --rad3d_num_slices "$rad3d_num_slices" \
                 --use_token_compression "$use_token_compression" \
+                "${fixed_resolution_args[@]}" \
                 --use_vllm "$USE_VLLM" \
                 --reasoning "$REASONING" \
                 --temperature "$TEMPERATURE" \
@@ -104,6 +112,7 @@ run_experiment() {
                     --max_image_num "$MAX_IMAGE_NUM" \
                     --rad3d_num_slices "$rad3d_num_slices" \
                     --use_token_compression "$use_token_compression" \
+                    "${fixed_resolution_args[@]}" \
                     --use_vllm "$USE_VLLM" \
                     --reasoning "$REASONING" \
                     --temperature "$TEMPERATURE" \
