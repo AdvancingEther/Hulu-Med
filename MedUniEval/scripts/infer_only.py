@@ -135,6 +135,9 @@ def main():
     parser.add_argument("--vision_zip_enable", type=parse_optional_bool, default=None)
     parser.add_argument("--vision_zip_domain_kept_ratio", type=float, default=None)
     parser.add_argument("--vision_zip_contextual_kept_ratio", type=float, default=None)
+    parser.add_argument("--cdpruner_enable", type=parse_optional_bool, default=None)
+    parser.add_argument("--cdpruner_kept_ratio", type=float, default=None)
+    parser.add_argument("--cdpruner_alpha", type=float, default=None)
 
     parser.add_argument("--test_times", type=int, default=1)
     parser.add_argument("--use_llm_judge", type=str, default="False")
@@ -160,6 +163,12 @@ def main():
         os.environ["VISION_ZIP_DOMAIN_KEPT_RATIO"] = str(args.vision_zip_domain_kept_ratio)
     if args.vision_zip_contextual_kept_ratio is not None:
         os.environ["VISION_ZIP_CONTEXTUAL_KEPT_RATIO"] = str(args.vision_zip_contextual_kept_ratio)
+    if args.cdpruner_enable is not None:
+        os.environ["CDPRUNER_ENABLE"] = str(args.cdpruner_enable)
+    if args.cdpruner_kept_ratio is not None:
+        os.environ["CDPRUNER_KEPT_RATIO"] = str(args.cdpruner_kept_ratio)
+    if args.cdpruner_alpha is not None:
+        os.environ["CDPRUNER_ALPHA"] = str(args.cdpruner_alpha)
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     os.environ["NCCL_IGNORE_DISABLED_P2P"] = "1"
 

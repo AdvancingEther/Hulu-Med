@@ -35,6 +35,11 @@ class Hulumed_qwen2_visionzip:
     def __new__(cls, model_path: str, args: Any) -> Any:
         from models.HuluMed_Qwen2.HuluMed_Qwen2_VisionZip import HuluMed_Qwen2_VisionZip
         return HuluMed_Qwen2_VisionZip(model_path, args)
+@LLMRegistry.register("Hulumed_qwen2_cdpruner")
+class Hulumed_qwen2_cdpruner:
+    def __new__(cls, model_path: str, args: Any) -> Any:
+        from models.HuluMed_Qwen2.HuluMed_Qwen2_CDPruner import HuluMed_Qwen2_CDPruner
+        return HuluMed_Qwen2_CDPruner(model_path, args)
 @LLMRegistry.register("Hulumed_qwen3")
 class Hulumed_qwen3:
     def __new__(cls, model_path: str, args: Any) -> Any:

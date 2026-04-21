@@ -108,6 +108,23 @@ def normalize_vision_zip_config(config: Optional[Dict[str, Any]] = None) -> Dict
     return merged
 
 
+def normalize_cdpruner_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    default_config = {
+        "enable": False,
+        "kept_ratio": 0.25,
+        "alpha": 1.0,
+    }
+    if config is None:
+        return dict(default_config)
+
+    merged = dict(default_config)
+    merged.update(config)
+    merged["enable"] = bool(merged["enable"])
+    merged["kept_ratio"] = float(merged["kept_ratio"])
+    merged["alpha"] = float(merged["alpha"])
+    return merged
+
+
 def build_vision_projector(config, delay_load=False, **kwargs):
     """Build vision projector based on config."""
     projector_type = getattr(config, 'mm_projector_type', 'linear')
@@ -148,6 +165,9 @@ class HulumedMetaModel:
         super(HulumedMetaModel, self).__init__(config)
         self.config.vision_zip_config = normalize_vision_zip_config(
             getattr(self.config, "vision_zip_config", None)
+        )
+        self.config.cdpruner_config = normalize_cdpruner_config(
+            getattr(self.config, "cdpruner_config", None)
         )
         print('config.vision_encoder',config.vision_encoder)
         if config.vision_encoder is not None:
@@ -229,6 +249,9 @@ class HulumedMetaForCausalLM(ABC):
 
     def _get_vision_zip_config(self) -> Dict[str, Any]:
         return normalize_vision_zip_config(getattr(self.config, "vision_zip_config", None))
+
+    def _get_cdpruner_config(self) -> Dict[str, Any]:
+        return normalize_cdpruner_config(getattr(self.config, "cdpruner_config", None))
 
     def _filter_valid_visual_tensors(
         self,
@@ -398,6 +421,131 @@ class HulumedMetaForCausalLM(ABC):
         selected_features[contextual_positions_in_selected] = contextual_features.to(selected_features.dtype)
         return selected_features, select_mask
 
+    def _cdpruner_fast_map_dpp(
+        self,
+        kernel: torch.Tensor,
+        keep_num: int,
+    ) -> torch.LongTensor:
+        token_count = kernel.shape[0]
+        keep_num = max(1, min(int(keep_num), token_count))
+        cis = torch.zeros((keep_num, token_count), device=kernel.device, dtype=torch.float32)
+        di2s = torch.diagonal(kernel, dim1=0, dim2=1).clone().float()
+        selected = []
+        eps = 1e-6
+
+        for i in range(keep_num):
+            j = torch.argmax(di2s).item()
+            if not math.isfinite(float(di2s[j])) or float(di2s[j]) <= eps:
+                break
+            selected.append(j)
+            if i == keep_num - 1:
+                break
+            if i == 0:
+                proj = kernel[j].float()
+            else:
+                proj = kernel[j].float() - torch.matmul(cis[:i, j], cis[:i])
+            denom = torch.sqrt(di2s[j].clamp(min=eps))
+            eis = proj / denom
+            cis[i] = eis
+            di2s = di2s - eis.square()
+            di2s[j] = -float("inf")
+
+        if not selected:
+            return torch.arange(keep_num, device=kernel.device, dtype=torch.long)
+        return torch.tensor(sorted(selected), device=kernel.device, dtype=torch.long)
+
+    def _select_cdpruner_tokens(
+        self,
+        sample_features: torch.Tensor,
+        text_embed: torch.Tensor,
+        cdpruner_config: Dict[str, Any],
+    ) -> Tuple[torch.Tensor, torch.BoolTensor]:
+        num_tokens = sample_features.shape[0]
+        if num_tokens == 0:
+            empty_mask = torch.zeros((0,), dtype=torch.bool, device=sample_features.device)
+            return sample_features, empty_mask
+
+        kept_ratio = float(cdpruner_config["kept_ratio"])
+        keep_num = min(num_tokens, max(1, int(math.floor(num_tokens * kept_ratio))))
+        if keep_num >= num_tokens:
+            select_mask = torch.ones(num_tokens, dtype=torch.bool, device=sample_features.device)
+            return sample_features, select_mask
+
+        visual = nn.functional.normalize(sample_features.float(), dim=-1, eps=1e-6)
+        text = nn.functional.normalize(text_embed.float(), dim=-1, eps=1e-6)
+        similarity = torch.matmul(visual, visual.transpose(0, 1))
+        relevance = torch.matmul(visual, text)
+        relevance = (relevance - relevance.min()) / (relevance.max() - relevance.min() + 1e-6)
+        quality = torch.exp(float(cdpruner_config["alpha"]) * relevance).clamp(min=1e-6)
+
+        kernel = quality.unsqueeze(1) * similarity * quality.unsqueeze(0)
+        kernel = 0.5 * (kernel + kernel.transpose(0, 1))
+        diag = torch.diagonal(kernel, dim1=0, dim2=1)
+        diag.copy_(diag.clamp(min=1e-6))
+
+        select_idx = self._cdpruner_fast_map_dpp(kernel, keep_num)
+        select_mask = torch.zeros(num_tokens, dtype=torch.bool, device=sample_features.device)
+        select_mask[select_idx] = True
+        return sample_features[select_mask], select_mask
+
+    def _apply_cdpruner(
+        self,
+        mm_features: torch.FloatTensor,
+        cd_text_embeds: torch.FloatTensor,
+        batched_num_patches: torch.LongTensor,
+        grid_sizes: torch.LongTensor,
+        merge_sizes: torch.LongTensor,
+        modals: List[str],
+    ) -> Tuple[torch.FloatTensor, torch.BoolTensor]:
+        cdpruner_config = self._get_cdpruner_config()
+        selected_features = []
+        compression_masks = []
+        start = 0
+
+        for num_patches, grid_size, merge_size, modal in zip(
+            batched_num_patches.tolist(),
+            grid_sizes.tolist(),
+            merge_sizes.tolist(),
+            modals,
+        ):
+            if modal == "text" or num_patches == 0:
+                continue
+
+            end = start + num_patches
+            sample_features = mm_features[start:end]
+            if cdpruner_config["enable"] and modal in {"image", "video"}:
+                num_frames, height, width = (int(x) for x in grid_size)
+                merge_size = int(merge_size)
+                tokens_per_frame = (height // merge_size) * (width // merge_size)
+
+                frame_features = sample_features.view(num_frames, tokens_per_frame, -1)
+                frame_outputs = []
+                frame_masks = []
+                for frame_feature in frame_features:
+                    selected_frame_features, frame_mask = self._select_cdpruner_tokens(
+                        frame_feature,
+                        cd_text_embeds,
+                        cdpruner_config,
+                    )
+                    frame_outputs.append(selected_frame_features)
+                    frame_masks.append(frame_mask)
+
+                sample_features = torch.cat(frame_outputs, dim=0)
+                sample_mask = torch.cat(frame_masks, dim=0)
+            else:
+                sample_mask = torch.ones(num_patches, dtype=torch.bool, device=mm_features.device)
+
+            selected_features.append(sample_features)
+            compression_masks.append(sample_mask)
+            start = end
+
+        if not selected_features:
+            empty_mask = torch.zeros((0,), dtype=torch.bool, device=mm_features.device)
+            return mm_features, empty_mask
+        mm_features = torch.cat(selected_features, dim=0)
+        compression_mask = torch.cat(compression_masks, dim=0)
+        return mm_features, compression_mask
+
     def _apply_vision_zip(
         self,
         mm_features: torch.FloatTensor,
@@ -564,6 +712,35 @@ class HulumedMetaForCausalLM(ABC):
 
         return selected_features, input_ids, attention_mask, position_ids, labels
 
+    def _apply_cdpruner_to_sequence(
+        self,
+        selected_features: torch.FloatTensor,
+        select_mask: torch.BoolTensor,
+        input_ids: torch.LongTensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+    ):
+        image_selected = (input_ids == self.config.image_token_index)
+        text_masks = torch.logical_not(image_selected)
+        text_masks[image_selected] = select_mask
+        input_ids = input_ids[text_masks]
+
+        if attention_mask is not None:
+            attention_mask = attention_mask[text_masks]
+        if labels is not None:
+            labels = labels[text_masks]
+        if position_ids is not None:
+            position_ids = position_ids[text_masks]
+            pos_start = [0] + torch.nonzero(position_ids == 0)[:, 0].tolist()
+            pos_end = pos_start[1:] + [len(input_ids)]
+            position_ids = torch.cat([
+                torch.arange(end - start, device=input_ids.device)
+                for start, end in zip(pos_start, pos_end)
+            ])
+
+        return selected_features, input_ids, attention_mask, position_ids, labels
+
     def prepare_inputs_labels_for_multimodal(
         self,
         input_ids: torch.LongTensor = None,
@@ -575,7 +752,8 @@ class HulumedMetaForCausalLM(ABC):
         grid_sizes: Optional[torch.LongTensor] = None,
         merge_sizes: Optional[torch.LongTensor] = None,
         modals: Optional[List[str]] = None,
-    ):
+        cd_text_embeds: Optional[torch.FloatTensor] = None,
+        ):
         """Prepare inputs and labels for multimodal training/inference."""
         vision_encoder = self.get_vision_encoder()
         
@@ -611,10 +789,16 @@ class HulumedMetaForCausalLM(ABC):
         )
 
         vision_zip_config = self._get_vision_zip_config()
+        cdpruner_config = self._get_cdpruner_config()
         if vision_zip_config["enable"]:
             assert B == 1, "VisionZip token selection is only supported for batch_size=1"
             if attn_scores is None or attn_keys is None:
                 raise ValueError("VisionZip is enabled but the vision encoder did not return attention scores/keys.")
+            compression_mask = torch.ones(mm_features.shape[0], dtype=torch.bool, device=input_ids.device)
+        elif cdpruner_config["enable"]:
+            assert B == 1, "CDPruner token selection is only supported for batch_size=1"
+            if cd_text_embeds is None:
+                raise ValueError("CDPruner is enabled but cd_text_embeds is not provided.")
             compression_mask = torch.ones(mm_features.shape[0], dtype=torch.bool, device=input_ids.device)
         else:
             compression_mask = self._get_compression_mask(
@@ -644,6 +828,18 @@ class HulumedMetaForCausalLM(ABC):
                 modals,
             )
             mm_features, input_ids, attention_mask, position_ids, labels = self._apply_vision_zip_to_sequence(
+                mm_features, compression_mask, input_ids, attention_mask, position_ids, labels
+            )
+        elif cdpruner_config["enable"]:
+            mm_features, compression_mask = self._apply_cdpruner(
+                mm_features,
+                cd_text_embeds=cd_text_embeds[0],
+                batched_num_patches=batched_num_patches,
+                grid_sizes=grid_sizes,
+                merge_sizes=merge_sizes,
+                modals=modals,
+            )
+            mm_features, input_ids, attention_mask, position_ids, labels = self._apply_cdpruner_to_sequence(
                 mm_features, compression_mask, input_ids, attention_mask, position_ids, labels
             )
         elif self.config.use_token_compression:
@@ -708,6 +904,7 @@ class HulumedQwen2ForCausalLM(Qwen2ForCausalLM, HulumedMetaForCausalLM):
         grid_sizes: Optional[torch.LongTensor] = None,
         merge_sizes: Optional[torch.LongTensor] = None,
         modals: Optional[List[str]] = None,
+        cd_text_embeds: Optional[torch.FloatTensor] = None,
         **loss_kwargs,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         """Forward pass with multimodal support."""
@@ -729,6 +926,7 @@ class HulumedQwen2ForCausalLM(Qwen2ForCausalLM, HulumedMetaForCausalLM):
                 grid_sizes=grid_sizes,
                 merge_sizes=merge_sizes,
                 modals=modals,
+                cd_text_embeds=cd_text_embeds,
             )
 
         return super().forward(
@@ -755,6 +953,7 @@ class HulumedQwen2ForCausalLM(Qwen2ForCausalLM, HulumedMetaForCausalLM):
         grid_sizes: Optional[torch.LongTensor] = None,
         merge_sizes: Optional[torch.LongTensor] = None,
         modals: Optional[List[str]] = None,
+        cd_text_embeds: Optional[torch.FloatTensor] = None,
         **kwargs,
     ) -> Union[GenerateOutput, torch.LongTensor]:
         """Generate with multimodal support."""
@@ -784,6 +983,7 @@ class HulumedQwen2ForCausalLM(Qwen2ForCausalLM, HulumedMetaForCausalLM):
                 grid_sizes=grid_sizes,
                 merge_sizes=merge_sizes,
                 modals=modals,
+                cd_text_embeds=cd_text_embeds,
             )
         else:
             inputs_embeds = self.get_model().embed_tokens(input_ids)

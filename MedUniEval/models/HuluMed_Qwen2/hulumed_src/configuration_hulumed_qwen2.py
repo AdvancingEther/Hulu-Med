@@ -27,6 +27,23 @@ except ModuleNotFoundError:
         "normalize_vision_zip_config",
     )
 
+
+def normalize_cdpruner_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    default_config = {
+        "enable": False,
+        "kept_ratio": 0.25,
+        "alpha": 1.0,
+    }
+    if config is None:
+        return dict(default_config)
+
+    merged = dict(default_config)
+    merged.update(config)
+    merged["enable"] = bool(merged["enable"])
+    merged["kept_ratio"] = float(merged["kept_ratio"])
+    merged["alpha"] = float(merged["alpha"])
+    return merged
+
 try:
     from .modeling_hulumed_encoder import HulumedVisionEncoderModel
 except ModuleNotFoundError:
@@ -64,6 +81,7 @@ class HulumedQwen2Config(Qwen2Config):
         use_token_compression: bool = True,
         image_token_index: int = -1,
         vision_zip_config: Optional[Dict[str, Any]] = None,
+        cdpruner_config: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         """
@@ -76,6 +94,7 @@ class HulumedQwen2Config(Qwen2Config):
             use_token_compression (bool): Whether to use token compression for videos. Default is True.
             image_token_index (int): Token index for image placeholders. Default is -1.
             vision_zip_config (dict, optional): VisionZip options.
+            cdpruner_config (dict, optional): CDPruner options.
             **kwargs: Additional arguments passed to Qwen2Config.
         """
         super().__init__(**kwargs)
@@ -83,6 +102,7 @@ class HulumedQwen2Config(Qwen2Config):
 
         self.vision_encoder = vision_encoder
         self.vision_zip_config = normalize_vision_zip_config(vision_zip_config)
+        self.cdpruner_config = normalize_cdpruner_config(cdpruner_config)
 
         if vision_encoder_config is not None and not isinstance(vision_encoder_config, PretrainedConfig):
             vision_encoder_config = HulumedVisionEncoderConfig(**vision_encoder_config)
